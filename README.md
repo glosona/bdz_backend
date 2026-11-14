@@ -46,12 +46,13 @@
 ### 시스템 구조
 
 ```mermaid
-flowchart TB
+flowchart LR
     User[사용자] --> ALB[ALB]
     ALB --> GW[gateway-service]
     ALB -.->|"/ws/chat"| CHAT
 
     subgraph SVC[서비스]
+        direction TB
         AUTH[auth]
         MEM[member]
         ORD["order (담당)"]
@@ -79,7 +80,7 @@ flowchart TB
 
 ## 주문(펀딩) 서비스 구현
 
-order-service 전체(펀딩·리워드·주문 도메인)와 서비스 간 이벤트 계약 중 주문·펀딩 이벤트를 담당함.
+order-service 전체(펀딩·리워드·주문 도메인)와 서비스 간 이벤트 계약 중 주문·펀딩 이벤트 담당.
 
 ### 담당 업무
 
@@ -94,6 +95,8 @@ order-service 전체(펀딩·리워드·주문 도메인)와 서비스 간 이�
 | 테스트·CI | 단위·통합 테스트 291개 작성, Testcontainers(PostgreSQL·RabbitMQ) 통합 테스트, JaCoCo 70% 커버리지 기준을 빌드에 적용 |
 
 ### 주문·펀딩 흐름
+
+**주문·결제**
 
 ```mermaid
 sequenceDiagram
@@ -110,6 +113,15 @@ sequenceDiagram
     MQ-->>O: PAID 반영
     O->>MQ: 주문 완료 알림
     MQ->>N: 알림 전송
+```
+
+**펀딩 마감 판정**
+
+```mermaid
+sequenceDiagram
+    participant O as order-service
+    participant MQ as RabbitMQ
+    participant P as payment-service
 
     Note over O: 펀딩 마감 시각 (TaskScheduler)
     O->>O: 성공/실패 판정
@@ -157,7 +169,7 @@ stateDiagram-v2
 
 **문제 상황**
 
-> Eureka Client를 추가하자 `rabbitTemplateCustomizer` 빈이 두 번 등록되며 애플리케이션 실행과 전체 테스트가 실패함
+> Eureka Client 추가 후 `rabbitTemplateCustomizer` 빈이 중복 등록되어 애플리케이션 실행과 전체 테스트 실패
 
 - 환경: Spring Boot 4.1.0, Spring Modulith 2.1.0 (AMQP 이벤트 외부화), Spring Cloud 2025.1.2 (Eureka Client)
 - 게이트웨이·서비스 디스커버리 적용을 위해 루트 `build.gradle`에 `spring-cloud-dependencies` BOM과 Eureka Client를 추가한 직후부터 발생
@@ -170,7 +182,7 @@ A bean with that name has already been defined in class path resource
 [org/springframework/modulith/events/amqp/RabbitJackson2Configuration.class] and overriding is disabled.
 ```
 
-- 원인: Spring Modulith AMQP에는 Jackson 3.x용 `RabbitJacksonConfiguration`과 Jackson 2.x용(Deprecated) `RabbitJackson2Configuration`이 있고, 두 설정이 같은 이름의 빈을 등록함. 각 설정은 해당 버전의 Jackson 클래스가 classpath에 있으면 활성화되는데, 서로를 배제하는 조건이 없음
+- 원인: Spring Modulith AMQP에는 Jackson 3.x용 `RabbitJacksonConfiguration`과 Jackson 2.x용(Deprecated) `RabbitJackson2Configuration`이 있고, 두 설정이 같은 이름의 빈을 등록. 각 설정은 해당 버전의 Jackson 클래스가 classpath에 있으면 활성화되는데, 서로를 배제하는 조건이 없음
 
 ```java
 // Jackson 3.x용
@@ -182,7 +194,7 @@ public class RabbitJacksonConfiguration { @Bean RabbitTemplateCustomizer rabbitT
 public class RabbitJackson2Configuration { @Bean RabbitTemplateCustomizer rabbitTemplateCustomizer(ObjectMapper mapper) { ... } }
 ```
 
-- Boot 4.x 기본인 Jackson 3.x(`tools.jackson`)에 더해, Eureka Client가 Jackson 2.x(`com.fasterxml.jackson`)를 함께 끌어와 두 조건이 동시에 충족됨
+- Boot 4.x 기본인 Jackson 3.x(`tools.jackson`)에 더해, Eureka Client가 Jackson 2.x(`com.fasterxml.jackson`)를 함께 끌어와 두 조건이 동시에 충족
 
 ```text
 spring-boot-starter (4.1.0)
@@ -196,7 +208,7 @@ spring-cloud-netflix-eureka-client (5.0.2)
 
 > Eureka가 쓰는 Jackson 2.x는 classpath에 남기고, Modulith의 Jackson 2.x용 자동 구성만 비활성화
 
-- Eureka는 Spring 빈을 주입받지 않고 내부에서 직접 `ObjectMapper`를 만들어 씀 → Jackson 2.x 클래스가 있어야 하지만, RabbitMQ 직렬화와는 무관함
+- Eureka는 Spring 빈을 주입받지 않고 내부에서 직접 `ObjectMapper`를 생성해 사용 → Jackson 2.x 클래스가 있어야 하지만, RabbitMQ 직렬화와는 무관
 - 즉 기능 충돌이 아니라, Eureka가 로드한 Jackson 2.x 클래스 때문에 Modulith의 레거시 자동 구성 조건이 잘못 발동한 문제로 판단
 - 검토한 대안
 
@@ -217,13 +229,13 @@ spring:
       - org.springframework.modulith.events.amqp.RabbitJackson2Configuration
 ```
 
-- Jackson 3.x 기반 `RabbitJacksonConfiguration`만 남아 `RabbitTemplateCustomizer`가 하나만 등록됨
+- Jackson 3.x 기반 `RabbitJacksonConfiguration`만 남아 `RabbitTemplateCustomizer` 하나만 등록
 - 프레임워크 우회 설정이므로, Spring Modulith에서 이 문제가 수정되면 설정을 제거해야 함 (설정 위치를 이슈에 기록)
 
 **2) 팀 전체 공유**
 
 - 같은 공통 모듈(`modules/common`)로 Eureka Client를 받는 모든 서비스에 영향이 있어, 원인·대안 비교를 이슈 [#88](https://github.com/KT-Cloud-2-BDS/bds_backend/issues/88)로 정리해 공유
-- payment·notification 서비스에도 같은 설정이 적용됨
+- payment·notification 서비스에도 같은 설정 적용
 
 **검증 및 결과**
 
@@ -238,7 +250,7 @@ spring:
 
 ### 2. 결제 요청 이벤트가 Outbox에 기록되지 않음
 - **문제**: `@Externalized`를 붙인 결제 요청 이벤트를 발행해도 Outbox 테이블에 기록되지 않고 RabbitMQ로 나가지 않음
-- **원인**: 이벤트 외부화 기본 설정이 애플리케이션 패키지(`com.bds.order`) 하위만 대상으로 삼아, 공통 라이브러리(`com.bds.common.events`)의 이벤트를 감지하지 못함
+- **원인**: 이벤트 외부화 기본 설정이 애플리케이션 패키지(`com.bds.order`) 하위만 대상으로 삼아, 공통 라이브러리(`com.bds.common.events`)의 이벤트 미감지
 - **해결**: `EventExternalizationConfiguration`을 직접 등록해 패키지 제한 없이 `@Externalized` 어노테이션 기준으로 선택·라우팅하도록 변경
 - **결과**: 외부 모듈 이벤트 정상 발행, Testcontainers 기반 Outbox 발행 통합 테스트로 재발 방지
 
@@ -255,11 +267,11 @@ public EventExternalizationConfiguration eventExternalizationConfiguration() {
 
 **문제 상황**
 
-> 판정 트랜잭션 하나가 펀딩 행 락을 쥔 채 주문 전체를 엔티티로 조회·처리해, 그동안 같은 펀딩을 수정하려는 요청이 모두 대기함
+> 판정 트랜잭션 하나가 펀딩 행 락을 쥔 채 주문 전체를 엔티티로 조회·처리해, 그동안 같은 펀딩 수정 요청이 모두 대기
 
-- 펀딩 마감 시각이 되면 스케줄러가 판정을 실행함: 펀딩 행을 `FOR UPDATE`로 잠그고 성공/실패를 정한 뒤, 해당 펀딩의 주문을 모두 처리함
+- 펀딩 마감 시각에 스케줄러가 판정 실행: 펀딩 행을 `FOR UPDATE`로 잠그고 성공/실패를 정한 뒤, 해당 펀딩의 주문 전체 처리
 - 이 전체가 `@Transactional` 하나로 묶여 있어 두 가지 문제가 생김
-  - **락 점유:** 주문을 다 처리할 때까지 펀딩 행 락이 풀리지 않음. 판정 중 도착한 결제 완료 메시지처럼 같은 펀딩의 모금액을 고치는 요청은 그동안 대기함
+  - **락 점유:** 주문을 다 처리할 때까지 펀딩 행 락 유지. 판정 중 도착한 결제 완료 메시지처럼 같은 펀딩의 모금액을 고치는 요청은 그동안 대기
   - **메모리:** 주문을 리워드까지 `JOIN FETCH`한 엔티티로 한 번에 조회해, 주문 수에 비례해 메모리를 씀
 
 ```java
@@ -283,21 +295,15 @@ public void judgeFunding(Long fundingId) {
 
 **1) 트랜잭션 분리** ([`fb0d03c`](https://github.com/KT-Cloud-2-BDS/bds_backend/commit/fb0d03c))
 
-```mermaid
-flowchart LR
-    subgraph Before[변경 전: 트랜잭션 1개]
-        A1[펀딩 락 획득] --> A2[성공/실패 판정] --> A3[주문 N건 처리] --> A4[커밋·락 해제]
-    end
-    subgraph After[변경 후: 트랜잭션 분리]
-        B1[펀딩 락 획득] --> B2[판정] --> B3[커밋·락 해제]
-        B3 --> B4[주문 1건씩 개별 트랜잭션]
-    end
-```
+| | 트랜잭션 범위 |
+|---|---|
+| 변경 전 (트랜잭션 1개) | 펀딩 락 획득 → 성공/실패 판정 → 주문 N건 처리 → **커밋·락 해제** |
+| 변경 후 (트랜잭션 분리) | 펀딩 락 획득 → 판정 → **커밋·락 해제** → 주문 1건씩 개별 트랜잭션 |
 
 - `FundingJudgmentOrchestrator`를 새로 두고, 판정(`judgeFunding`, 상태 변경 + 저장)과 주문 처리(`handleFundingSuccess/Failure`)를 차례로 호출
-- 판정 트랜잭션이 커밋되는 즉시 펀딩 행 락이 풀리고, 주문 처리는 주문 단위 트랜잭션으로 실행되어 주문 하나의 실패가 다른 주문에 영향을 주지 않음
-- 부수 효과 처리: 분리 후에는 판정 결과(`boolean`)를 보고 성공/실패 주문 처리를 고르기 때문에, 판정할 수 없는 상태(이미 판정된 펀딩 등)에서 그냥 반환하면 실패 처리로 잘못 넘어갈 수 있음. 그래서 로그만 남기던 것을 `IllegalStateException`으로 바꿔 주문 처리 단계로 넘어가지 않게 함
-- 서버 시작 보정(`FundingScheduleInitializer`)의 `@Transactional`도 제거해 조회마다 커넥션을 짧게 쓰도록 함
+- 판정 트랜잭션 커밋 즉시 펀딩 행 락 해제. 주문 처리는 주문 단위 트랜잭션으로 실행되어, 주문 하나의 실패가 다른 주문에 영향 없음
+- 부수 효과 처리: 분리 후에는 판정 결과(`boolean`)를 보고 성공/실패 주문 처리를 고르기 때문에, 판정할 수 없는 상태(이미 판정된 펀딩 등)에서 그냥 반환하면 실패 처리로 잘못 넘어갈 수 있음. → 로그만 남기던 것을 `IllegalStateException`으로 바꿔 주문 처리 단계 진입 차단
+- 서버 시작 보정(`FundingScheduleInitializer`)의 `@Transactional`도 제거해 조회마다 커넥션을 짧게 사용
 
 **2) 커서 기반 청크 조회** ([`b146e3c`](https://github.com/KT-Cloud-2-BDS/bds_backend/commit/b146e3c))
 
@@ -311,62 +317,79 @@ List<Long> findOrderIdsByFundingIdAndStatus(..., Long lastOrderId, Pageable page
 
 **검증 및 결과**
 
-> 같은 조건에서 개선 전 / 트랜잭션 분리 / 청크 조회 세 시점을 3회씩 측정: 판정 중 락 대기 약 0.8초 → 없음, 판정 중 커넥션 최장 점유 약 1.5초 → 약 0.07초, 판정 1회당 메모리 할당 약 350MiB → 약 180MiB
+> 트랜잭션 분리로 판정 중 락 대기 제거(약 0.8초 → 없음), 청크 조회로 판정 1회 메모리 할당 약 절반 감소, 커넥션 점유 약 1.5초 → 0.07초
 
-- 측정 방법
-  - 세 커밋을 `git worktree`로 각각 띄워, 같은 DB·같은 설정에서 주문 50,000건 펀딩을 판정
-  - 공정한 비교를 위해 맞춘 조건: 워밍업 판정 1회 후 측정 판정 3회(30초 간격), 힙 고정(`-Xms512m -Xmx512m`), 측정 판정 10초 전 `jcmd GC.run`, seed 직후 `ANALYZE`·`CHECKPOINT`(측정 구간과 체크포인트 겹침 없음 확인)
-  - 락 대기: PostgreSQL `log_lock_waits` 로그(`deadlock_timeout` 100ms) + 판정 중 같은 펀딩 행을 50ms 간격으로 수정하는 요청
-  - 메모리·커넥션: Spring Boot Actuator(Micrometer) → Prometheus(5초 수집) → Grafana
+**테스트 목표**
 
-| 지표 (3회 중앙값, 괄호는 최소~최대) | 개선 전 | 트랜잭션 분리 | 청크 조회 |
+두 개선이 기대한 효과를 실제로 내는지 확인
+
+| 개선 | 기대한 효과 | 확인할 지표 |
+|---|---|---|
+| 트랜잭션 분리 | 판정 중 들어온 같은 펀딩 수정 요청이 기다리지 않음 | 수정 요청의 락 대기 시간 |
+| 청크 조회 | 판정 1회 메모리 사용과 DB 커넥션 점유 시간 감소 | 판정 구간의 메모리 할당량, 커넥션 최장 사용 시간 |
+
+**테스트 환경**
+
+- 비교 대상: 개선 전([`b19b389`](https://github.com/KT-Cloud-2-BDS/bds_backend/commit/b19b389)) / 트랜잭션 분리(`fb0d03c`) / 청크 조회(`b146e3c`) 세 커밋. 세 커밋 사이에는 판정 관련 코드만 다름
+- 데이터: 주문 50,000건짜리 펀딩
+- 동일 조건: 같은 로컬 PostgreSQL 18·설정, JVM 힙 512MiB 고정, 측정 전 워밍업 판정 1회, 측정 판정 직전 GC 실행(`jcmd GC.run`)
+- 측정 도구
+  - 락 대기: PostgreSQL `log_lock_waits` (100ms 넘게 기다리면 로그 기록)
+  - 메모리·커넥션: Spring Boot Actuator → Prometheus → Grafana
+
+**테스트 절차** (세 커밋 각각 같은 순서로 진행)
+
+1. 측정용 펀딩과 주문을 넣고 order-service 실행
+2. 펀딩 마감 시각에 스케줄러가 판정 실행
+3. 판정 중 같은 펀딩 행에 50ms 간격으로 수정 요청 전송 (판정 중 결제 완료 메시지가 도착하는 상황)
+4. PostgreSQL 락 대기 로그와 Grafana 지표 기록
+5. 판정 3회 반복, 중앙값으로 비교
+
+**테스트 결과** (3회 중앙값)
+
+| 지표 | 개선 전 | 트랜잭션 분리 | 청크 조회 |
 |---|---|---|---|
-| 락 대기 최대 (PostgreSQL 로그) | **846ms** (762~1,441) | 3회 모두 100ms 넘는 대기 없음 | 3회 모두 100ms 넘는 대기 없음 |
-| 락 보유 트랜잭션 최대 | 825ms (768~1,446) | 6ms (3~9) | 27ms (17~29) |
-| 판정 중 수정 요청 최대 (평소 약 28ms) | 877ms (791~1,473) | 44ms (44~56) | 48ms (42~59) |
-| 커넥션 최장 사용 시간 (Grafana, 라운드 최고치) | 약 1.5초 | 약 0.6초 | **약 0.07초** |
-| 20초 동안 새로 할당한 메모리 (2·3회차) | 약 340~350MiB | 약 375MiB | **약 180~185MiB** |
-| 판정 소요 시간 (마감 → 마지막 판정 로그) | 709ms (643~1,251) | 759ms (590~1,092) | 1,555ms (1,499~2,034) |
+| 수정 요청의 락 대기 (PostgreSQL 로그) | **846ms** | 대기 없음 | 대기 없음 |
+| 커넥션 최장 사용 시간 | 약 1.5초 | 약 0.6초 | **약 0.07초** |
+| 판정 구간 메모리 할당 (20초 집계) | 약 350MiB | 약 375MiB | **약 180MiB** |
 
-- **트랜잭션 분리:** 개선 전에는 판정 3회 모두 수정 요청이 0.8~1.4초 막혔고, PostgreSQL이 이를 직접 기록함. 분리 후에는 대기가 한 번도 없었고 수정 요청 시간이 평소 수준(약 28ms + 측정 오차)으로 돌아옴
+- **트랜잭션 분리:** 개선 전에는 판정 3회 모두 수정 요청이 0.8~1.4초 대기, 분리 후에는 대기 0회
 
 ```text
 LOG:  process 46289 still waiting for ShareLock on transaction 14225 after 100.087 ms
-DETAIL:  Process holding the lock: 45822. Wait queue: 46289.
 LOG:  process 46289 acquired ShareLock on transaction 14225 after 1440.954 ms
 ```
 
-- **청크 조회:** 트랜잭션 분리만으로는 락은 풀렸지만, 주문 50,000건을 엔티티로 한 번에 조회하는 쿼리가 커넥션을 약 0.6초 붙잡음. 청크 조회 후에는 가장 긴 커넥션 사용이 약 0.07초(500건 조회 1회)로 줄고, 판정 1회당 새로 할당하는 메모리가 약 절반이 됨
+- **청크 조회:** 트랜잭션 분리만으로는 주문 5만 건 일괄 조회 쿼리가 여전히 커넥션을 약 0.6초 점유. 500건씩 나눠 조회한 뒤 가장 긴 커넥션 사용 약 0.07초, 메모리 할당 약 절반으로 감소
+- OOM 방지 효과는 미확인: 힙 512MiB에서는 개선 전에도 OOM이 나지 않아, 메모리 사용 감소까지만 확인
 
-![개선 단계별 DB 커넥션 지표 (점선: 각 라운드의 첫 측정 판정, 왼쪽부터 개선 전 / 트랜잭션 분리 / 청크 조회)](docs/images/judgment-compare-db.png)
+| 커넥션 최장 사용 시간 | 판정 구간 메모리 할당 |
+|---|---|
+| ![커넥션 최장 사용 시간](docs/images/judgment-compare-db.png) | ![판정 구간 메모리 할당](docs/images/judgment-compare-jvm.png) |
 
-![개선 단계별 JVM 메모리 지표 (힙 512MiB 고정)](docs/images/judgment-compare-jvm.png)
+점선은 각 커밋의 첫 측정 판정 시각. 왼쪽부터 개선 전 / 트랜잭션 분리 / 청크 조회
 
-![힙 영역별 사용량과 커넥션 대여 횟수](docs/images/judgment-compare-chunk.png)
+**추가로 발견한 문제**
 
-**측정하며 새로 확인한 문제**
+> 락 대기와 메모리는 줄었지만, 판정 전체 시간은 줄지 않고 청크 조회 이후 오히려 증가 (709ms → 759ms → 1,555ms)
 
-락 대기와 메모리는 줄었지만, 판정 전체 시간은 줄지 않고 청크 조회 이후 오히려 늘어남
+- 트랜잭션 분리 후: 주문별 처리 메서드(`@Transactional`)가 판정 트랜잭션에 참여하지 못하고 주문마다 새 트랜잭션 생성(Spring 기본 전파 방식 `REQUIRED`). 판정 한 번에 커넥션을 주문 수만큼 대여 → 락 시간을 줄인 대신 생긴 비용으로 판단
+- 청크 조회 후: 판정을 반복할수록 시간 증가(1,499 → 1,555 → 2,034ms). 측정 데이터상 뒤 회차일수록 그 펀딩 앞에 다른 펀딩의 주문이 많아서, 청크 조회 쿼리가 앞선 주문 수만큼 느려지는 것으로 추정되나 실행 계획은 아직 미확인
+- 두 가지 모두 개선 계획에 추가
 
-- 트랜잭션 분리 후 판정 시간이 개선 전과 비슷함(709ms → 759ms)
-  - 분리 전에는 주문별 처리 메서드(`@Transactional`)가 판정 트랜잭션에 참여해 커넥션을 한 번만 썼음(Spring 기본 전파 방식 `REQUIRED`)
-  - 분리 후에는 이 메서드가 주문마다 새 트랜잭션을 열어, 판정 한 번에 커넥션을 주문 수만큼(약 5만 회) 빌리게 됨. 커넥션 대여 횟수 그래프가 0에서 판정마다 약 6만 회(`increase()` 구간 외삽 포함)로 바뀐 것으로 확인함
-  - 락 시간을 줄인 대신 생긴 비용으로 판단함
-- 청크 조회 후 판정 시간이 약 2배가 됨(759ms → 1,555ms)
-  - 3회차로 갈수록 길어짐(1,499 → 1,555 → 2,034ms). 측정 데이터는 펀딩 4개의 주문을 순서대로 넣어서, 뒤 회차일수록 그 펀딩 앞에 다른 펀딩의 주문이 많음(1만 → 6만 → 11만 건)
-  - 청크 조회 쿼리가 앞선 주문 수만큼 느려지는 것으로 보이나, 실행 계획으로 아직 확인하지 못함
-- 두 가지 모두 개선 계획에 추가함
+![커넥션 대여 횟수: 개선 전 0회, 트랜잭션 분리 이후 판정마다 약 6만 회](docs/images/judgment-compare-chunk.png)
 
-**비교에서 뺀 지표**
+<details>
+<summary>비교 제외 지표</summary>
 
-| 지표 | 결과 | 뺀 이유 |
-|---|---|---|
-| GC 횟수·정지 시간 | 세 시점 모두 같은 모양 | 그래프의 GC는 모두 측정 직전에 직접 실행한 `jcmd GC.run`. 힙을 512MiB로 고정해서 판정 중에는 GC가 한 번도 일어나지 않음 |
-| Old Gen·힙 사용량 | 시점 간 일관된 차이 없음 | 측정 직전에 힙을 정리했고, 5초 수집이라 판정 순간 값을 거의 잡지 못함. 메모리 비교는 "새로 할당한 메모리"로 대신함 |
-| 커넥션 획득 대기, 활성·대기 커넥션 수 | 약 1~2ms, 대기 0 | 판정은 스케줄러 스레드 하나에서 돌고 동시 요청을 넣지 않아 커넥션 풀 경합이 생기지 않는 조건이었음 |
-| CPU 사용률 | 0~15% 사이에서 들쭉날쭉 | 수집 시점의 순간값이라 판정 구간을 대표하지 못함 |
+| 지표 | 제외 이유 |
+|---|---|
+| GC 횟수·정지 시간 | 그래프의 GC는 모두 측정 직전에 직접 실행한 GC. 힙을 512MiB로 고정해 판정 중 GC 미발생 |
+| Old Gen·힙 사용량 | 측정 직전에 힙을 정리했고, 5초 수집이라 판정 순간 값을 거의 잡지 못함 |
+| 커넥션 획득 대기, 활성·대기 커넥션 수 | 동시 요청을 넣지 않아 커넥션 풀 경합이 없는 조건 |
+| CPU 사용률 | 수집 시점의 순간값이라 판정 구간을 대표하지 못함 |
 
-- 측정 한계: 시점별 3회 측정. 첫 측정 판정은 워밍업 후에도 느린 경우가 있어(개선 전 1,251ms, 트랜잭션 분리 1,092ms) 중앙값으로 비교함. 락 샘플러는 50ms 간격이라 그보다 짧은 락은 놓칠 수 있으나, 100ms 넘는 대기는 PostgreSQL 로그로 빠짐없이 확인. Grafana 수치는 그래프에서 읽은 근삿값
+</details>
 
 ## 결과 및 성과
 
@@ -377,7 +400,7 @@ LOG:  process 46289 acquired ShareLock on transaction 14225 after 1440.954 ms
 
 ## 개선 계획
 
-프로젝트 종료 후 order-service 코드를 다시 검토하며 정리한 항목. 해결하면 체크하고 관련 커밋을 연결함.
+프로젝트 종료 후 order-service 코드를 다시 검토하며 정리한 항목.
 
 **데이터 정합성**
 - [ ] 취소 메시지 중복 수신 시 재고가 두 번 복원되는 문제 수정 (상태 검증 후 재고 복원)
@@ -402,7 +425,7 @@ LOG:  process 46289 acquired ShareLock on transaction 14225 after 1440.954 ms
 
 ## 실행 방법
 
-MSA 구조라 order-service 하나만 켜면 동작하지 않음. 아래 구성 요소가 먼저 떠 있어야 함.
+MSA 구조라 order-service 단독으로는 동작하지 않음. 아래 구성 요소 선행 실행 필요.
 
 | 구성 요소 | 필요한 이유 | 위치 |
 |---|---|---|
