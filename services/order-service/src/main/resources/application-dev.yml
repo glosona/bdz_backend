@@ -1,6 +1,6 @@
 spring:
   application:
-    name: order-dev
+    name: order-service
 
   datasource:
     url: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}

@@ -5,7 +5,7 @@ spring:
   application:
     name: payment-service
   profiles:
-    active: ${SPRING_PROFILES_ACTIVE:local}
+    active: ${SPRING_PROFILES_ACTIVE:quickstart}
 
 management:
   endpoints:

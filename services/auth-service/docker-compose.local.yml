@@ -2,7 +2,6 @@ services:
   postgres:
     image: postgres:17
     container_name: bds-auth-postgres-local
-    env_file: .env
     environment:
       POSTGRES_DB: ${DB_NAME:-auth}
       POSTGRES_USER: ${DB_USERNAME:-postgres}

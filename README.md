@@ -168,21 +168,27 @@ stateDiagram-v2
 ## 1. Eureka Client 추가 후 애플리케이션 시작 실패 (빈 중복 정의)
 
 ### i. 문제 상황
-
-> Eureka Client 추가 후 `rabbitTemplateCustomizer` 빈이 중복 등록되어 애플리케이션 실행과 전체 테스트 실패
-
-- 환경: Spring Boot 4.1.0, Spring Modulith 2.1.0 (AMQP 이벤트 외부화), Spring Cloud 2025.1.2 (Eureka Client)
-- 게이트웨이·서비스 디스커버리 적용을 위해 루트 `build.gradle`에 `spring-cloud-dependencies` BOM과 Eureka Client를 추가한 직후부터 발생
-- 영향 범위: 애플리케이션 실행, 슬라이스·통합 테스트 전체
-
 ```text
 The bean 'rabbitTemplateCustomizer', defined in class path resource
 [org/springframework/modulith/events/amqp/RabbitJacksonConfiguration.class], could not be registered.
 A bean with that name has already been defined in class path resource
 [org/springframework/modulith/events/amqp/RabbitJackson2Configuration.class] and overriding is disabled.
 ```
+> Eureka Client 추가 후 `rabbitTemplateCustomizer` 빈이 중복 등록되어 애플리케이션 실행과 전체 테스트 실패
 
-- 원인: Spring Modulith AMQP에는 Jackson 3.x용 `RabbitJacksonConfiguration`과 Jackson 2.x용(Deprecated) `RabbitJackson2Configuration`이 있고, 두 설정이 같은 이름의 빈을 등록. 각 설정은 해당 버전의 Jackson 클래스가 classpath에 있으면 활성화되는데, 서로를 배제하는 조건이 없음
+| 구분 | 내용 |
+|---|---|
+| 환경 | Spring Boot 4.1.0, Spring Modulith 2.1.0 (AMQP 이벤트 외부화), Spring Cloud 2025.1.2 (Eureka Client) |
+| 발생 경위 | 게이트웨이·서비스 디스커버리 적용을 위해 루트 `build.gradle`에 `spring-cloud-dependencies` BOM과 Eureka Client를 추가한 직후 |
+| 영향 범위 | 애플리케이션 실행, 슬라이스·통합 테스트 전체 |
+
+### ii. 원인 분석
+
+> Jackson 2.x와 3.x가 함께 classpath에 올라가, 서로 배제 조건이 없는 Modulith의 두 자동 구성이 같은 이름의 빈을 동시에 등록
+
+**1) 같은 이름의 빈을 등록하는 두 자동 구성**
+
+Spring Modulith AMQP에는 Jackson 3.x용 `RabbitJacksonConfiguration`과 Jackson 2.x용(Deprecated) `RabbitJackson2Configuration`이 있고, 두 설정이 같은 이름의 빈(`rabbitTemplateCustomizer`)을 등록. 각 설정은 해당 버전의 Jackson 클래스가 classpath에 있으면 활성화되는데, 서로를 배제하는 조건이 없음
 
 ```java
 // Jackson 3.x용
@@ -194,7 +200,9 @@ public class RabbitJacksonConfiguration { @Bean RabbitTemplateCustomizer rabbitT
 public class RabbitJackson2Configuration { @Bean RabbitTemplateCustomizer rabbitTemplateCustomizer(ObjectMapper mapper) { ... } }
 ```
 
-- Boot 4.x 기본인 Jackson 3.x(`tools.jackson`)에 더해, Eureka Client가 Jackson 2.x(`com.fasterxml.jackson`)를 함께 끌어와 두 조건이 동시에 충족
+**2) Eureka Client가 Jackson 2.x를 함께 가져옴**
+
+Boot 4.x 기본인 Jackson 3.x(`tools.jackson`)에 더해, Eureka Client가 Jackson 2.x(`com.fasterxml.jackson`)를 함께 끌어와 두 조건이 동시에 충족
 
 ```text
 spring-boot-starter (4.1.0)
@@ -204,21 +212,20 @@ spring-cloud-netflix-eureka-client (5.0.2)
       └── com.fasterxml.jackson.core:jackson-databind:2.21.4  ← Jackson 2.x
 ```
 
-### ii. 해결 전략
+### iii. 해결 전략
 
-> Eureka가 쓰는 Jackson 2.x는 classpath에 남기고, Modulith의 Jackson 2.x용 자동 구성만 비활성화
+> Eureka가 쓰는 Jackson 2.x는 classpath에 남기고, Modulith의 Jackson 2.x용 자동 구성만 비활성화 채택
 
 - Eureka는 Spring 빈을 주입받지 않고 내부에서 직접 `ObjectMapper`를 생성해 사용 → Jackson 2.x 클래스가 있어야 하지만, RabbitMQ 직렬화와는 무관
 - 즉 기능 충돌이 아니라, Eureka가 로드한 Jackson 2.x 클래스 때문에 Modulith의 레거시 자동 구성 조건이 잘못 발동한 문제로 판단
-- 검토한 대안
 
-| 방법 | 판단 | 이유 |
+| 전략 후보 | 판단 | 이유 |
 |---|---|---|
 | Gradle에서 Jackson 2.x(`jackson-databind`) 제외 | 제외 | Eureka 코드가 Jackson 2.x 클래스를 직접 호출해 Eureka 통신 시점에 `NoClassDefFoundError` 위험 |
 | `allow-bean-definition-overriding: true` | 제외 | 로딩 순서에 따라 Jackson 2.x용 빈이 3.x용을 덮어쓸 수 있고, 다른 빈 중복 문제까지 가려짐 |
 | `RabbitJackson2Configuration`만 자동 구성에서 제외 | **채택** | 충돌 원인만 정확히 차단, Eureka 동작에는 영향 없음 |
 
-### iii. 해결 방법
+### iv. 해결 방법
 
 **1) 레거시 자동 구성 제외**
 
@@ -237,14 +244,14 @@ spring:
 - 같은 공통 모듈(`modules/common`)로 Eureka Client를 받는 모든 서비스에 영향이 있어, 원인·대안 비교를 이슈 [#88](https://github.com/KT-Cloud-2-BDS/bds_backend/issues/88)로 정리해 공유
 - payment·notification 서비스에도 같은 설정 적용
 
-### iv. 검증 및 결과
+### v. 검증 및 결과
+
+![Eureka 대시보드에 order-service가 UP 상태로 등록된 화면](docs/images/troubleshooting-eureka-registered.png)
 
 > 애플리케이션 정상 기동, Eureka 등록 정상, 슬라이스·통합 테스트 전체 통과
 
 - order-service 전체 테스트(Testcontainers 기반 RabbitMQ·Outbox 통합 테스트 포함) 통과
 - Jackson 2.x용 자동 구성을 제외한 뒤에도 Eureka Client가 정상 동작해, order-service가 Eureka에 `UP` 상태로 등록됨을 대시보드로 확인
-
-![Eureka 대시보드에 order-service가 UP 상태로 등록된 화면](docs/images/troubleshooting-eureka-registered.png)
 
 블로그 링크: [Spring Boot 4.x에서 Eureka Client와 Spring Modulith AMQP의 빈 충돌](https://sonaze.tistory.com/75)
 
@@ -256,9 +263,19 @@ spring:
 
 > `@Externalized`를 붙인 결제 요청 이벤트를 발행해도 Outbox 테이블(`event_publication`)에 기록되지 않고 RabbitMQ로도 발행되지 않음
 
-- 결제 요청 이벤트는 서비스 간 계약을 모아 둔 공통 라이브러리(`libs/bds-events`, 패키지 `com.bds.common.events`)에 정의
-- order-service는 `ApplicationEventPublisher`로 발행만 하고, Outbox 기록·발행은 Spring Modulith 이벤트 외부화에 맡기는 구조
-- 예외나 경고 로그 없이 이벤트가 외부화 대상에서 빠져, 결제 서비스가 요청을 받지 못하는 상태
+| 구분 | 내용 |
+|---|---|
+| 구조 | order-service는 `ApplicationEventPublisher`로 발행만 하고, Outbox 기록·발행은 Spring Modulith 이벤트 외부화에 위임 |
+| 증상 | 예외나 경고 로그 없이 이벤트가 외부화 대상에서 빠짐 |
+| 영향 범위 | 결제 서비스가 결제 요청을 받지 못함 |
+
+### ii. 원인 분석
+
+> 외부화 설정 빈이 없어 Spring Modulith 기본 설정이 적용됐고, 기본 설정은 애플리케이션 패키지(`com.bds.order`) 안의 이벤트만 외부화 대상으로 선택
+
+**1) 이벤트 계약은 order-service 패키지 밖에 위치**
+
+결제 요청 이벤트는 서비스 간 계약을 모아 둔 공통 라이브러리(`libs/bds-events`, 패키지 `com.bds.common.events`)에 정의
 
 ```java
 // libs/bds-events: 이벤트 계약 (order-service 패키지 밖)
@@ -272,16 +289,18 @@ public void publishPay(PaymentProcessPayEvent event) {
 }
 ```
 
-- 원인: 외부화 설정 빈을 따로 두지 않아 Spring Modulith 기본 설정이 적용됨. 기본 설정은 지정된 패키지(애플리케이션 패키지 `com.bds.order`) 안의 `@Externalized` 이벤트만 대상으로 삼아, `com.bds.common.events`의 이벤트 미감지
+**2) 기본 외부화 설정은 애플리케이션 패키지 안의 이벤트만 선택**
 
-### ii. 해결 전략
+외부화 설정 빈(`EventExternalizationConfiguration`)을 따로 두지 않아 Spring Modulith 기본 설정이 적용됨. 기본 설정은 지정된 패키지(애플리케이션 패키지 `com.bds.order`) 안에 있고 `@Externalized`가 붙은 이벤트만 대상으로 삼아, `com.bds.common.events`의 이벤트 미감지
+
+### iii. 해결 전략
 
 > 이벤트를 고르는 기준을 "패키지 + 어노테이션"에서 "어노테이션"으로 바꿔, 공통 라이브러리의 이벤트도 외부화 대상에 포함
 
 - 이벤트를 order-service 패키지로 옮기는 방법은 제외: 여러 서비스가 함께 쓰는 이벤트 계약을 공통 라이브러리에 두는 팀 구조를 깨기 때문
 - 라우팅은 기존처럼 `@Externalized` 값(`exchange::routingKey`)을 그대로 사용
 
-### iii. 해결 방법 ([`2367f80`](https://github.com/KT-Cloud-2-BDS/bds_backend/commit/2367f80))
+### iv. 해결 방법 ([`2367f80`](https://github.com/KT-Cloud-2-BDS/bds_backend/commit/2367f80))
 
 **외부화 설정 빈 직접 등록**
 
@@ -299,7 +318,7 @@ public EventExternalizationConfiguration eventExternalizationConfiguration() {
 
 - `@Externalized`가 붙은 이벤트는 패키지와 관계없이 선택, 라우팅 대상은 어노테이션 값에서 결정
 
-### iv. 검증 및 결과
+### v. 검증 및 결과
 
 > 공통 라이브러리 이벤트의 Outbox 기록·RabbitMQ 발행 정상화, 결제(3종)·알림 이벤트 발행 통합 테스트로 확인
 
@@ -321,7 +340,9 @@ void publishPay_호출시_outbox에_저장된다() {
 - 결제 요청·정산·환불 이벤트 각각 `event_publication` 기록 확인
 - 설정이 다시 빠지면 통합 테스트 실패로 감지
 
-### v. 추가로 발견한 문제
+### vi. 추가로 발견한 문제
+
+**1) 같은 외부화 설정이 서비스마다 복사됨**
 
 - 같은 설정이 order-service와 payment-service에 각각 복사된 상태. 이벤트 계약이 모든 서비스 패키지 밖(`libs/bds-events`)에 있는 구조라, 이벤트를 발행하는 서비스가 늘어날 때마다 같은 누락이 반복될 수 있음
 - 서비스별 설정을 공통 메시징 모듈(`modules/messaging`)의 자동 설정으로 옮겨 모든 서비스에 같은 규칙 적용 필요 → 개선 계획에 추가
@@ -334,9 +355,17 @@ void publishPay_호출시_outbox에_저장된다() {
 
 > 판정 트랜잭션 하나가 펀딩 행 락을 쥔 채 주문 처리까지 마쳐, 그동안 같은 펀딩 수정 요청이 모두 대기
 
-- 펀딩 마감 시각에 스케줄러가 판정 실행: 펀딩 행을 `FOR UPDATE`로 잠그고 성공/실패를 정한 뒤, 해당 펀딩의 주문 전체 처리
-- 이 전체가 `@Transactional` 하나라, 주문을 다 처리할 때까지 펀딩 행 락 유지
-- 판정 중 도착한 결제 완료 메시지처럼 같은 펀딩의 모금액을 고치는 요청은 그동안 대기. 주문이 많을수록 대기 시간 증가
+| 구분 | 내용 |
+|---|---|
+| 발생 시점 | 펀딩 마감 시각에 스케줄러가 판정 실행: 펀딩 행을 `FOR UPDATE`로 잠그고 성공/실패를 정한 뒤, 해당 펀딩의 주문 전체 처리 |
+| 영향 범위 | 판정 중 도착한 결제 완료 메시지처럼 같은 펀딩의 모금액을 고치는 요청 |
+| 규모 | 주문이 많을수록 대기 시간 증가 |
+
+### ii. 원인 분석
+
+> 펀딩 상태 변경과 주문 N건 처리가 `@Transactional` 하나로 묶여, 펀딩 행 락이 주문 처리가 끝날 때까지 유지
+
+판정 메서드 전체가 트랜잭션 하나라, 처음에 잡은 펀딩 행 락(`FOR UPDATE`)이 주문을 모두 처리하고 커밋할 때까지 풀리지 않음
 
 ```java
 // 변경 전: FundingStatusUpdater
@@ -357,13 +386,13 @@ private void handleFundingSuccess(Funding funding) {
 }
 ```
 
-### ii. 해결 전략
+### iii. 해결 전략
 
 > 락이 필요한 일(펀딩 상태 변경)과 필요 없는 일(주문 처리)을 트랜잭션으로 분리
 
 - 락이 지켜야 하는 것은 "펀딩 상태와 모금액이 동시에 바뀌지 않는 것"뿐이고, 주문 처리는 판정 결과만 알면 됨 → 판정만 먼저 커밋해도 정합성에 문제가 없다고 판단
 
-### iii. 해결 방법 ([`fb0d03c`](https://github.com/KT-Cloud-2-BDS/bds_backend/commit/fb0d03c))
+### iv. 해결 방법 ([`fb0d03c`](https://github.com/KT-Cloud-2-BDS/bds_backend/commit/fb0d03c))
 
 | | 트랜잭션 범위 |
 |---|---|
@@ -403,26 +432,23 @@ public boolean judgeFunding(Long fundingId) {
 - 로그만 남기고 반환하던 것을 `IllegalStateException`으로 바꿔 주문 처리 단계 진입 차단
 - 서버 시작 보정(`FundingScheduleInitializer`)의 `@Transactional`도 제거해 조회마다 커넥션을 짧게 사용
 
-### iv. 검증 및 결과
+### v. 검증 및 결과
 
 > 판정 중 같은 펀딩 수정 요청의 락 대기 약 0.8초 → 없음
 
-**1) 테스트 목표**
+| 구분 | 내용 |
+|---|---|
+| 비교 대상 | 개선 전([`b19b389`](https://github.com/KT-Cloud-2-BDS/bds_backend/commit/b19b389)) / 트랜잭션 분리(`fb0d03c`). 두 커밋 사이에는 판정 관련 코드만 다름 |
+| 테스트 데이터 | 주문 50,000건짜리 펀딩, 판정 3회 반복 후 중앙값 |
+| 동일 조건 | 같은 로컬 PostgreSQL 18·설정, JVM 힙 512MiB 고정, 측정 전 워밍업 판정 1회, 측정 판정 직전 GC 실행(`jcmd GC.run`) |
+| 도구 | 락 대기: PostgreSQL `log_lock_waits` (100ms 넘게 기다리면 로그 기록) / 커넥션: Spring Boot Actuator → Prometheus → Grafana |
+| 기대 효과 | 판정 중 들어온 같은 펀딩 수정 요청이 기다리지 않음 |
+| 확인 지표 | 수정 요청의 락 대기 시간 |
 
-| 개선 | 기대한 효과 | 확인할 지표 |
-|---|---|---|
-| 트랜잭션 분리 | 판정 중 들어온 같은 펀딩 수정 요청이 기다리지 않음 | 수정 요청의 락 대기 시간 |
+<details>
+<summary>테스트 절차</summary>
 
-**2) 테스트 환경**
-
-- 비교 대상: 개선 전([`b19b389`](https://github.com/KT-Cloud-2-BDS/bds_backend/commit/b19b389)) / 트랜잭션 분리(`fb0d03c`). 두 커밋 사이에는 판정 관련 코드만 다름
-- 데이터: 주문 50,000건짜리 펀딩
-- 동일 조건: 같은 로컬 PostgreSQL 18·설정, JVM 힙 512MiB 고정, 측정 전 워밍업 판정 1회, 측정 판정 직전 GC 실행(`jcmd GC.run`)
-- 측정 도구
-  - 락 대기: PostgreSQL `log_lock_waits` (100ms 넘게 기다리면 로그 기록)
-  - 커넥션·메모리: Spring Boot Actuator → Prometheus → Grafana
-
-**3) 테스트 절차** (두 커밋 각각 같은 순서로 진행)
+두 커밋 각각 같은 순서로 진행
 
 1. 측정용 펀딩과 주문을 넣고 order-service 실행
 2. 펀딩 마감 시각에 스케줄러가 판정 실행
@@ -430,14 +456,18 @@ public boolean judgeFunding(Long fundingId) {
 4. PostgreSQL 락 대기 로그와 Grafana 지표 기록
 5. 판정 3회 반복, 중앙값으로 비교
 
-**4) 테스트 결과** (3회 중앙값)
+</details>
+
+<br>
+
+**결과** (3회 중앙값)
 
 | 지표 | 개선 전 | 개선 후(트랜잭션 분리) |
 |---|---|---|
-| ① 수정 요청의 락 대기 (PostgreSQL 로그) | **846ms** | **대기 없음** |
-| ② 커넥션 최장 사용 시간 | 약 1.5초 | 약 0.6초 |
+| 1) 수정 요청의 락 대기 (PostgreSQL 로그) | **846ms** | **대기 없음** |
+| 2) 커넥션 최장 사용 시간 | 약 1.5초 | 약 0.6초 |
 
-**① 락 대기**
+**1) 락 대기**
 
 개선 전 판정 3회 모두 수정 요청이 0.8~1.4초 대기, 분리 후 대기 0회
 
@@ -445,8 +475,7 @@ public boolean judgeFunding(Long fundingId) {
 LOG:  process 46289 still waiting for ShareLock on transaction 14225 after 100.087 ms
 LOG:  process 46289 acquired ShareLock on transaction 14225 after 1440.954 ms
 ```
-
-*개선 전 측정에서 남은 PostgreSQL 로그. 트랜잭션 분리 후에는 이 로그가 한 줄도 남지 않음*
+<sub>*개선 전 측정에서 남은 PostgreSQL 로그. 트랜잭션 분리 후에는 이 로그가 한 줄도 남지 않음*</sub>
 
 - 개선 전: 수정 요청 세션(`process 46289`)이 펀딩 행 락을 쥔 판정 트랜잭션(`transaction 14225`)이 커밋될 때까지 약 1.44초 대기
 - 트랜잭션 분리 후: 100ms를 넘긴 대기 0회
@@ -462,13 +491,13 @@ LOG:  process 46289 acquired ShareLock on transaction 14225 after 1440.954 ms
 
 <br>
 
-**② 커넥션 최장 사용 시간**
+**2) 커넥션 최장 사용 시간**
 
 개선 전 약 1.5초 → 분리 후 약 0.6초
 
 ![커넥션 최장 사용 시간 (왼쪽: 개선 전 약 1.5초, 오른쪽: 트랜잭션 분리 후 약 0.6초)](docs/images/judgment-txsplit-conn.png)
 
-*점선은 각 커밋의 첫 측정 판정 시각. 왼쪽부터 개선 전 / 트랜잭션 분리*
+<sub>*점선은 각 커밋의 첫 측정 판정 시각. 왼쪽부터 개선 전 / 트랜잭션 분리*</sub>
 
 - 개선 전 약 1.5초: 펀딩 행 락을 쥔 판정 트랜잭션 전체
 - 분리 후 약 0.6초: 락을 해제한 뒤 실행되는 주문 일괄 조회 쿼리라 락 대기와 무관 → 4번에서 개선
@@ -481,18 +510,19 @@ LOG:  process 46289 acquired ShareLock on transaction 14225 after 1440.954 ms
 
 </details>
 
-### v. 추가로 발견한 문제
 
-> 락 대기는 사라졌지만, 판정 전체 시간은 줄지 않음 (709ms → 759ms)
+
+### vi. 추가로 발견한 문제
+
+**1) 락 대기는 사라졌지만, 판정 전체 시간은 줄지 않음 (709ms → 759ms)**
+
+![커넥션 대여 횟수 (왼쪽: 개선 전 0회, 오른쪽: 트랜잭션 분리 후 판정마다 약 6만 회)](docs/images/judgment-compare-chunk.png)
+
+<sub>*20초 동안 커넥션 풀에서 DB 커넥션을 빌린 횟수. 왼쪽부터 개선 전 / 트랜잭션 분리. 오른쪽 첫 작은 봉우리는 측정 전 워밍업 판정(주문 1만 건)*</sub>
 
 - 분리 전에는 주문별 처리 메서드(`@Transactional`)가 판정 트랜잭션에 참여해 커넥션을 한 번만 사용(Spring 기본 전파 방식 `REQUIRED`)
 - 분리 후에는 주문마다 새 트랜잭션 생성 → 판정 한 번에 커넥션을 주문 수만큼 대여
 - 락 시간을 줄인 대신 생긴 비용으로 판단 → 개선 계획에 추가
-
-![커넥션 대여 횟수 (왼쪽: 개선 전 0회, 오른쪽: 트랜잭션 분리 후 판정마다 약 6만 회)](docs/images/judgment-compare-chunk.png)
-
-*20초 동안 커넥션 풀에서 DB 커넥션을 빌린 횟수. 왼쪽부터 개선 전 / 트랜잭션 분리. 오른쪽 첫 작은 봉우리는 측정 전 워밍업 판정(주문 1만 건)*
-
 - 개선 전: 판정 전체가 트랜잭션 하나라 커넥션을 한 번만 사용 → 0에 붙어 있음
 - 트랜잭션 분리 후: 큰 봉우리 3개가 측정 판정 3회. 주문마다 트랜잭션을 새로 열어 판정마다 주문 수만큼(약 5만 회) 대여
 
@@ -511,8 +541,17 @@ LOG:  process 46289 acquired ShareLock on transaction 14225 after 1440.954 ms
 
 > 트랜잭션 분리 후 주문 처리가 별도 단계가 되면서, 주문 처리에는 주문 ID만 필요한데 주문 전체를 리워드까지 엔티티로 한 번에 올리는 조회가 드러남
 
-- 3번의 트랜잭션 분리 후에도 판정 1회에 주문 5만 건을 한 번에 조회하는 쿼리가 커넥션을 약 0.6초 점유
-- 주문 수에 비례해 메모리 사용 증가. 대량 주문 펀딩에서 OOM 위험
+| 구분 | 내용 |
+|---|---|
+| 발생 시점 | 3번의 트랜잭션 분리 후, 판정의 주문 처리 단계 |
+| 증상 | 판정 1회에 주문 5만 건을 한 번에 조회하는 쿼리가 커넥션을 약 0.6초 점유 |
+| 영향 범위 | 주문 수에 비례해 메모리 사용 증가. 대량 주문 펀딩에서 OOM 위험 |
+
+### ii. 원인 분석
+
+> 주문 처리에는 주문 ID만 필요한데, 해당 펀딩의 주문 전체를 리워드까지 `JOIN FETCH`한 엔티티로 한 번에 조회
+
+조회 쿼리가 페이징 없이 주문 엔티티 전체를 반환하고, 반복문은 그중 주문 ID만 사용
 
 ```java
 // 변경 전: OrderJpaRepository
@@ -526,7 +565,7 @@ List<Order> paidOrders = orderRepository.findByFundingIdAndStatus(fundingId, Ord
 for (Order order : paidOrders) { orderService.publishSettlement(order.getId()); }
 ```
 
-### ii. 해결 전략
+### iii. 해결 전략
 
 > 엔티티 대신 주문 ID만, 500건씩 나눠 조회
 
@@ -534,7 +573,7 @@ for (Order order : paidOrders) { orderService.publishSettlement(order.getId()); 
 - 엔티티 조회에 페이징을 붙이면 `FETCH JOIN + Pageable` 조합에서 Hibernate 6 서브쿼리 alias 문제가 생겨, ID만 조회하는 방식 선택
 - offset 페이징 대신 커서(`id > lastOrderId`) 방식 선택: 처리 중 주문 상태가 바뀌면 offset 기준이 밀려 누락이 생길 수 있기 때문
 
-### iii. 해결 방법 ([`b146e3c`](https://github.com/KT-Cloud-2-BDS/bds_backend/commit/b146e3c))
+### iv. 해결 방법 ([`b146e3c`](https://github.com/KT-Cloud-2-BDS/bds_backend/commit/b146e3c))
 
 **1) ID만 조회하는 커서 쿼리로 변경**
 
@@ -561,41 +600,45 @@ while (true) {
 
 - 마지막으로 처리한 ID를 다음 조회 기준으로 사용, 500건 미만이 나오면 종료
 
-### iv. 검증 및 결과
+### v. 검증 및 결과
 
 > 판정 1회 메모리 할당 약 절반 감소, 커넥션 최장 점유 약 0.6초 → 0.07초
 
-**1) 테스트 목표**
+| 구분 | 내용 |
+|---|---|
+| 비교 대상 | 트랜잭션 분리(`fb0d03c`) / 청크 조회([`b146e3c`](https://github.com/KT-Cloud-2-BDS/bds_backend/commit/b146e3c)). 3번과 이어 보기 위해 개선 전 값도 참고로 표시 |
+| 테스트 데이터·조건·도구·절차 | 3번과 동일 |
+| 기대 효과 | 판정 1회에 쓰는 메모리와 DB 커넥션 점유 시간 감소 |
+| 확인 지표 | 판정 구간 메모리 할당량, 커넥션 최장 사용 시간 |
 
-| 개선 | 기대한 효과 | 확인할 지표 |
-|---|---|---|
-| 청크 조회 | 판정 1회에 쓰는 메모리와 DB 커넥션 점유 시간 감소 | 판정 구간 메모리 할당량, 커넥션 최장 사용 시간 |
+<br>
 
-**2) 테스트 환경·절차**
+**결과** (3회 중앙값)
 
-- 비교 대상: 트랜잭션 분리(`fb0d03c`) / 청크 조회([`b146e3c`](https://github.com/KT-Cloud-2-BDS/bds_backend/commit/b146e3c)). 3번 이슈와 함께 보기 위해 개선 전 값도 참고로 표시
-- 데이터, 동일 조건, 측정 도구, 절차는 3번과 동일
-
-**3) 테스트 결과** (3회 중앙값)
-
-| 지표 | 개선 전 (참고) | 3번 적용 후(트랜잭션 분리) | 개선 후(청크 조회) |
+| 지표 | 개선 전 | 개선 1(트랜잭션 분리) | 개선 2(청크 조회) |
 |---|---|---|---|
-| 커넥션 최장 사용 시간 | 약 1.5초 | 약 0.6초 | **약 0.07초** |
-| 판정 구간 메모리 할당 (20초 집계) | 약 350MiB | 약 375MiB | **약 180MiB** |
+| 1) 커넥션 최장 사용 시간 | 약 1.5초 | 약 0.6초 | **약 0.07초** |
+| 2) 판정 구간 메모리 할당 (20초 집계) | 약 350MiB | 약 375MiB | **약 180MiB** |
 
 | 커넥션 최장 사용 시간 | 판정 구간 메모리 할당 |
 |---|---|
 | ![커넥션 최장 사용 시간](docs/images/judgment-compare-db.png) | ![판정 구간 메모리 할당](docs/images/judgment-compare-jvm.png) |
 
-*점선은 각 커밋의 첫 측정 판정 시각. 왼쪽부터 개선 전 / 트랜잭션 분리 / 청크 조회*
+<sub>*점선은 각 커밋의 첫 측정 판정 시각. 왼쪽부터 개선 전 / 트랜잭션 분리 / 청크 조회*</sub>
 
-- 커넥션 최장 사용 시간 (왼쪽 그래프)
-  - 개선 전 약 1.5초: 펀딩 행 락을 쥔 판정 트랜잭션 전체
-  - 트랜잭션 분리 약 0.6초: 3번으로 락은 풀었지만, 주문 5만 건을 한 번에 조회하는 쿼리가 남아 있던 상태
-  - 청크 조회 약 0.07초: 가장 긴 커넥션 사용이 500건 조회 1회로 감소
-- 판정 구간 메모리 할당 (오른쪽 그래프)
-  - 개선 전·트랜잭션 분리 모두 약 350~375MiB: 3번은 트랜잭션 범위만 바꿔 메모리 사용은 그대로
-  - 청크 조회 약 180MiB: 엔티티 대신 ID만, 500건씩 올려 약 절반으로 감소
+**1) 커넥션 최장 사용 시간** (왼쪽 그래프)
+
+- 개선 전 약 1.5초: 펀딩 행 락을 쥔 판정 트랜잭션 전체
+- 트랜잭션 분리 약 0.6초: 3번으로 락은 풀었지만, 주문 5만 건을 한 번에 조회하는 쿼리가 남아 있던 상태
+- 청크 조회 약 0.07초: 가장 긴 커넥션 사용이 500건 조회 1회로 감소
+
+**2) 판정 구간 메모리 할당** (오른쪽 그래프)
+
+- 개선 전·트랜잭션 분리 모두 약 350~375MiB: 3번은 트랜잭션 범위만 바꿔 메모리 사용은 그대로
+- 청크 조회 약 180MiB: 엔티티 대신 ID만, 500건씩 올려 약 절반으로 감소
+
+**3) OOM 방지 효과**: 미확인. 힙 512MiB에서는 개선 전에도 OOM이 나지 않아, 메모리 사용 감소까지만 확인
+
 
 <details>
 <summary>판정 구간 메모리 할당이란</summary>
@@ -604,8 +647,6 @@ while (true) {
 - 누적 카운터의 증가량이라, Prometheus 수집 간격(5초) 사이에 끝난 짧은 작업도 빠지지 않고 반영
 
 </details>
-
-**OOM 방지 효과**: 미확인. 힙 512MiB에서는 개선 전에도 OOM이 나지 않아, 메모리 사용 감소까지만 확인
 
 <details>
 <summary>비교 제외 지표 (3번·4번 공통)</summary>
@@ -619,9 +660,9 @@ while (true) {
 
 </details>
 
-### v. 추가로 발견한 문제
+### vi. 추가로 발견한 문제
 
-> 판정 전체 시간이 트랜잭션 분리 대비 약 2배로 증가 (759ms → 1,555ms)
+**1) 판정 전체 시간이 트랜잭션 분리 대비 약 2배로 증가 (759ms → 1,555ms)**
 
 - 판정을 반복할수록 시간 증가(1,499 → 1,555 → 2,034ms). 측정 데이터상 뒤 회차일수록 그 펀딩 앞에 다른 펀딩의 주문이 많음(1만 → 6만 → 11만 건)
 - 청크 조회 쿼리가 앞선 주문 수만큼 느려지는 것으로 추정되나 실행 계획은 아직 미확인 → 개선 계획에 추가
@@ -659,51 +700,91 @@ while (true) {
 
 ## 실행 방법
 
-MSA 구조라 order-service만 실행해서는 동작하지 않습니다. 아래 구성 요소를 먼저 실행해야 합니다.
+* 요구 환경: Java 25, Docker (Docker Desktop은 실행 중 상태)
+* Mac, Linux, Windows(PowerShell·Git Bash) 모두 동일
+* 로컬 실행에 필요한 설정값: `application-quickstart.yml`(기본 프로필), `infra/rabbitmq/.env.example`, `docker-compose.local.yml`에 기본값 주입, 추가 구성 필요 X
 
-| 구성 요소 | 필요한 이유 | 위치 |
-|---|---|---|
-| RabbitMQ | 결제·알림 이벤트 송수신, `msa` vhost와 서비스별 계정 필요 | `infra/rabbitmq` |
-| PostgreSQL | 주문·펀딩 DB (Flyway로 스키마 생성) | `services/order-service/docker-compose.dev.yml` |
-| discovery-service (Eureka) | 서비스 등록·조회, 게이트웨이 라우팅 대상 | `platform/discovery-service` |
-| payment-service + MySQL | 결제·정산·환불 응답 (없으면 주문이 PAYING 상태에서 멈춥니다) | `services/payment-service` |
-| gateway-service, auth-service | 로그인 토큰 검증 후 사용자 헤더 전달 (직접 호출할 때는 생략할 수 있습니다) | `platform/gateway-service`, `services/auth-service` |
-
-- 요구 환경: Java 25, Docker
-
-<details>
-<summary>order-service 단독 실행 순서 펼치기</summary>
+### A. MSA 전체 실행
 
 ```bash
 git clone https://github.com/glosona/bdz_backend.git
 cd bdz_backend
 
-# 1. RabbitMQ (ENV_NAME, AMQP_PORT, MGMT_PORT, DATA_DIR, 서비스별 *_HASH 값을 .env.local에 작성)
-cd infra/rabbitmq && docker compose --env-file .env.local up -d && cd ../..
-
-# 2. Eureka
-./gradlew :platform:discovery-service:bootRun
-
-# 3. PostgreSQL (POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_PORT 환경변수 필요)
-docker compose -f services/order-service/docker-compose.dev.yml up -d postgres
-
-# 4. order-service
-SPRING_PROFILES_ACTIVE=dev POSTGRES_HOST=localhost ./gradlew :services:order-service:bootRun
+# 1. 인프라 (RabbitMQ, order PostgreSQL, payment MySQL, auth PostgreSQL·Redis)
+docker compose -f infra/rabbitmq/docker-compose.yml --env-file infra/rabbitmq/.env.example up -d
+docker compose -f services/order-service/docker-compose.local.yml up -d
+docker compose -f services/payment-service/docker-compose.local.yml up -d
+docker compose -f services/auth-service/docker-compose.local.yml up -d
 ```
 
-게이트웨이 없이 직접 호출할 때는 사용자 헤더와 내부 시크릿을 함께 보내야 합니다 (`InternalGatewaySecretFilter`).
-
-```http
-GET http://localhost:8080/api/orders
-X-User-Id: 1
-X-Internal-Secret: local-dev-internal-secret
+```bash
+# 2. 애플리케이션: 터미널을 5개 열어 아래 순서대로 하나씩 실행 (bootRun은 종료되지 않습니다)
+./gradlew :platform:discovery-service:bootRun   # Eureka, 8761
+./gradlew :services:auth-service:bootRun        # 8081
+./gradlew :services:order-service:bootRun       # 8080
+./gradlew :services:payment-service:bootRun     # 8085
+./gradlew :platform:gateway-service:bootRun     # 8000, auth-service가 Eureka에 등록된 뒤에 실행
 ```
+
+게이트웨이를 통한 호출이 인증 헤더 없이 `401`을 반환하면 연결된 것입니다.
+
+```bash
+curl -i http://localhost:8000/api/orders
+```
+
+<details>
+<summary>구성 요소와 순서가 필요한 이유</summary>
+
+| 구성 요소 | 역할 |
+|---|---|
+| RabbitMQ (`msa` vhost, 서비스별 계정) | 결제·알림 이벤트 송수신 |
+| discovery-service (Eureka) | 서비스 등록·조회, 게이트웨이 라우팅 대상 |
+| payment-service + MySQL | 결제·정산·환불 응답 (없으면 주문이 PAYING 상태에서 멈춥니다) |
+| auth-service + PostgreSQL·Redis | 로그인과 JWT 발급 |
+| gateway-service | 토큰 검증 후 사용자 헤더 전달 |
+
+- gateway-service는 기동할 때 Eureka에서 auth-service를 조회하므로 auth-service보다 먼저 띄우면 종료됩니다.
+- auth-service의 PostgreSQL은 order-service DB(5432)와 겹치지 않도록 호스트 5433 포트를 씁니다.
+- 네이버 로그인, 이메일 발송, 은행 연동(`BANK_URL`)은 자리표시 값이 들어 있습니다. 실제로 쓰려면 환경변수로 덮어씁니다.
+- auth-service의 JWT 서명 키는 저장소에 공개된 테스트 전용 키입니다. 로컬 밖에서는 `JWT_RSA_PRIVATE_KEY`로 별도 키를 주입합니다.
+- 개인 설정이 필요하면 gitignore 대상인 `application-local.yml`을 만들고 `SPRING_PROFILES_ACTIVE=local`로 실행합니다.
 
 </details>
 
-<!-- TODO: 확인 필요 - 위 순서는 코드 설정 기준으로 정리한 것. 실제로 띄워 보고 빠진 단계 보완 -->
+### B. order-service 단독 실행
 
-테스트만 실행할 때는 Docker만 있으면 됩니다. Testcontainers가 PostgreSQL과 RabbitMQ를 직접 띄웁니다.
+```bash
+# 1. RabbitMQ
+docker compose -f infra/rabbitmq/docker-compose.yml --env-file infra/rabbitmq/.env.example up -d
+
+# 2. PostgreSQL
+docker compose -f services/order-service/docker-compose.local.yml up -d
+
+# 3. Eureka (별도 터미널)
+./gradlew :platform:discovery-service:bootRun
+
+# 4. order-service (별도 터미널)
+./gradlew :services:order-service:bootRun
+```
+
+게이트웨이 없이 직접 호출할 때는 사용자 헤더와 내부 시크릿(`InternalGatewaySecretFilter`)을 함께 보냅니다. `200 []`이 반환되면 정상입니다.
+
+```bash
+curl -i http://localhost:8080/api/orders -H "X-User-Id: 1" -H "X-Internal-Secret: local-dev-internal-secret"
+```
+
+<details>
+<summary>참고</summary>
+
+- Flyway가 기동 시 스키마를 만들며, 기본 접속 정보는 [application-quickstart.yml](services/order-service/src/main/resources/application-quickstart.yml)에 있습니다.
+- 내부 시크릿 헤더가 없으면 `401 INVALID_INTERNAL_SECRET`이 반환됩니다.
+- 이 상태에서는 payment-service가 없어 주문이 PAYING 상태에서 멈춥니다. 결제까지 보려면 A로 실행합니다.
+
+</details>
+
+### C. 테스트 실행
+
+Docker만 실행 중이면 됩니다. Testcontainers가 PostgreSQL과 RabbitMQ를 직접 띄우므로 A, B의 인프라는 필요 없습니다.
 
 ```bash
 ./gradlew :services:order-service:test :services:order-service:jacocoTestReport

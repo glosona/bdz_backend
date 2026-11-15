@@ -1,0 +1,78 @@
+# 클론 직후 바로 실행하기 위한 기본값(기본 프로필). 환경변수로 덮어쓸 수 있으며, 실제 비밀값은 넣지 않습니다.
+# 개인 설정은 gitignore 대상인 application-local.yml 에 두고 SPRING_PROFILES_ACTIVE=local 로 실행합니다.
+server:
+  port: 8081
+
+spring:
+  datasource:
+    # docker-compose.local.yml 의 PostgreSQL은 호스트 5433 포트 (order-service DB와 충돌 방지)
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:auth}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        format_sql: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+  security:
+    oauth2:
+      client:
+        registration:
+          naver:
+            client-name: naver
+            # 네이버 로그인을 실제로 쓰려면 환경변수로 발급받은 값을 넣습니다.
+            client-id: ${NAVER_CLIENT_ID2:local-dummy-client-id}
+            client-secret: ${NAVER_CLIENT_SECRET2:local-dummy-client-secret}
+            redirect-uri: http://localhost:8000/login/oauth2/code/naver
+            authorization-grant-type: authorization_code
+            scope: nickname,email
+        provider:
+          naver:
+            authorization-uri: https://nid.naver.com/oauth2.0/authorize
+            token-uri: https://nid.naver.com/oauth2.0/token
+            user-info-uri: https://openapi.naver.com/v1/nid/me
+            user-name-attribute: response
+
+oauth2:
+  frontend-redirect-uri: http://localhost:3000/oauth/callback
+
+mail:
+  host: smtp.naver.com
+  port: 465
+  # 이메일 발송을 실제로 쓰려면 환경변수로 계정 정보를 넣습니다.
+  username: ${MAIL_USERNAME:local-dummy}
+  password: ${MAIL_PASSWORD:local-dummy}
+  properties:
+    mail:
+      smtp:
+        auth: true
+        ssl:
+          enable: true
+          trust: smtp.naver.com
+        connectiontimeout: 5000
+        timeout: 5000
+        writetimeout: 5000
+
+jwt:
+  expiration:
+    access: ${JWT_ACCESS_EXPIRATION:3600000}
+    refresh: ${JWT_REFRESH_EXPIRATION:1209600000}
+  rsa:
+    # [테스트 전용 키] 이 저장소에 공개된 키이므로 누구나 이 키로 토큰을 위조할 수 있습니다.
+    # 이 프로필(quickstart)에서만 쓰이며, 개발·운영 서버는 JWT_RSA_PRIVATE_KEY 환경변수로 별도 키를 주입해야 합니다.
+    # 로컬 외 환경(공유 서버, 외부 노출)에서 이 프로필을 켜지 마세요.
+    private-key: ${JWT_RSA_PRIVATE_KEY:MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCpfAI8yD0+AlplDvcRakN2NLZDGcN3pqWsUNSkouDfA65bHaWouWD2+ZK7JtxiVn4PnRr5NKTUE3JFqmPt3yWnaKE6ysOjBlTxaVctR66eeRGbzpnDLjgz03JlvrCPKlSwZ6dWDKH5rG0Nsvm1hQs3HWNGRkLjUO8fiOM5NLPFyxpwWUQcMLEBVWAGgrpKa2ShX4+F8HcheMjRoi+UquiOdFPOHIq5QIVsWCCCag7gNSgaN7LoWc33Rd0lmX+/Kyxa8VGf2UWt/FpYHt2hpt8N86A/7GHzlXsXS/cDDD372Fb4HPrl1ow0C9zGU4Mr+DTlxgT4qRvQRpF5Xg6yi+d3AgMBAAECggEAMIt0CpviKsY6xRJ1wxe4Tf3ILM0O11E0x/f5CFUc6tPfl3qU7hB3DRasKA339vTGM8uwo6uoAJS3WOv2pnYRj3NhJvlX8vSH1QPys+YBxqNv3zxcf3LYJ0QL0se9Q6yAyGxQGk4RAPYZ4GAgtRTwAu/YdRL/6qNOcq5fQw3s5hyQp4EBj+RjG8QSJC+uW6ITTvmVBMfAEu6P2RdZLyz91efi8rLMYu/0haRQzeAIntFLV58c9a9BhzoILIq3sTdZLKqYdW8JgMTRcwOGd8w2DtQcz6GkprRcXsnNIyms7WBOyVuI6P1uTfdhDbYnY+UJbl6LfymkGdWlraZKXrDXGQKBgQDchqhfSlW5HjxLHV0nO1VGMwdB51MzVUi/aT662lmL5uidrvyV0c5g/AukplYJoV0fsw559nfsrgtWrorC6zuYHq6aji/8MGcxd4cftWIRAWAMtUI+d8HBwOw0Tks1rjn9LuvvCIc1K+NKkg+FLnqx1ocG950JW4Yat3Y4m9d9jwKBgQDEv3Bw8Q8gK7dcrrKyXCdny1lDxmmJ/sLc+VyA+WBJycJ7ffHB/4g+JrZD7cu4ZitZoxXuSb2BYRLEEoWe+5ECiy9hyQbnZbLcDvfTlrzOD+3UJZwiupgpCq65TamUyM395lE8BpKsDPhXVDkDLb3PKn6X6pIC2Rn2CnOmUOvTmQKBgHTFvTyQMSpQL18bEmumyHXeqXYlVvI0s8vfn/7zhj1FrWFp+ogey+ihLk0mYyLAVn5lo0HD2Cb01j41OHcUdr8LaCuhJRmmS85u25dXxbD5iHHSPVy0r124mZrs5nhrZHuDsB0n5+io77dZ9mvwe7nVvjRbQ8VjuHRHN4usQgRTAoGAeRnoyOvnxoKCC59QSK6mZqHo4Om4voK8SK2IPa7BkMmKVt7PtvxlTPQhDjDJS0g/+J2EezaSWZd5qIxKCPCJckpfsM2+3SFg9UiVTHyk3CU723AG6e12iRSVNWPTNMxg1p40dEELeLFHDuG9cfJuuZxLbZCprO0aqLIIO1/luEkCgYEAxwOK+ZWG4mbLs9359uyVJZnwsC91oxmAjmXHKUSKk8tGGnUiLEvJPcOOQF0xW0gzxayzcRRCBGnSd5p8KKNDTLu6ANJms0lPWOi/fTDecWSjCRHudtJgx9C4p3CIvuLfkbZfCfYRmJ5zJSecPH42YuZLqqjTZRJVqgm3/CTJ3ys=}
+
+internal:
+  gateway-secret: ${INTERNAL_GATEWAY_SECRET:local-dev-internal-secret}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://${EUREKA_HOST:localhost}:${EUREKA_PORT:8761}/eureka/
